@@ -595,15 +595,26 @@ class ShortcutManagerDialog(QDialog):
                 "original_key": k
             }
 
-        # 2. Raccourcis des autres extensions (EDN, Diff, config, live Qt)
+        # 2. Raccourcis des autres extensions (EDN, Diff, config, code, live Qt)
         try:
             overrides = self.config.get("addon_shortcuts_overrides", {})
             self.addon_shortcuts = self.addon_scanner.get_all_addon_shortcuts()
 
+            # Noms génériques signalant des raccourcis natifs Anki capturés par le scan Qt
+            _native_menus = {"Fichier", "File", "Outils", "Tools", "Affichage", "View",
+                             "Aide", "Help", "Édition", "Edit", "Module complémentaire"}
+
             for idx, item in enumerate(self.addon_shortcuts):
+                # Exclure les éléments live_qt non identifiés ou natifs
+                if item.addon_id == "live_qt" and (item.addon_name in _native_menus or item.addon_name.lower().endswith(" - anki")):
+                    continue
+
                 k = f"addon_{item.addon_id}_{idx}"
                 name_key = f"{item.addon_name}_{item.action_name}"
-                current_scut = overrides.get(k, overrides.get(name_key, item.shortcut))
+                id_key = f"{item.addon_id}_{item.action_name}"
+                sk = item.edn_info.get("shortcut_key") if item.edn_info else None
+                # Recherche prioritaire par cle semantique stable
+                current_scut = (overrides.get(sk) if sk else None) or overrides.get(name_key) or overrides.get(id_key) or item.shortcut
 
                 self.shortcuts_data[k] = {
                     "shortcut": current_scut,
@@ -621,8 +632,8 @@ class ShortcutManagerDialog(QDialog):
                     "edn_info": item.edn_info,
                     "original_key": k
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CustomShortcuts] Erreur lors du chargement des raccourcis d'extensions : {e}")
 
     def refresh_display(self):
         """Met a jour le clavier virtuel, le tableau des commandes et l'inspecteur."""
@@ -636,7 +647,10 @@ class ShortcutManagerDialog(QDialog):
                 continue
             if item["source"] == "addon" and not show_addons:
                 continue
-            if current_scope != "all" and item["scope"] != current_scope:
+            if current_scope == "addons":
+                if item["source"] != "addon":
+                    continue
+            elif current_scope != "all" and item["scope"] != current_scope:
                 continue
             kb_data[action_id] = {
                 "shortcut": item["shortcut"],
@@ -664,7 +678,10 @@ class ShortcutManagerDialog(QDialog):
                 continue
             if item["source"] == "addon" and not show_addons:
                 continue
-            if current_scope != "all" and item["scope"] != current_scope:
+            if current_scope == "addons":
+                if item["source"] != "addon":
+                    continue
+            elif current_scope != "all" and item["scope"] != current_scope:
                 continue
 
             label = item["label"]
@@ -778,7 +795,10 @@ class ShortcutManagerDialog(QDialog):
                     continue
                 if item["source"] == "addon" and not show_addons:
                     continue
-                if current_scope != "all" and item["scope"] != current_scope:
+                if current_scope == "addons":
+                    if item["source"] != "addon":
+                        continue
+                elif current_scope != "all" and item["scope"] != current_scope:
                     continue
                 
                 _, item_base = self.virtual_keyboard._parse_shortcut_string(item["shortcut"])
@@ -946,11 +966,31 @@ class ShortcutManagerDialog(QDialog):
                 orig_key = item.get("original_key", action_id)
                 self.config[orig_key] = scut
             elif item.get("source") == "addon":
-                orig_key = item.get("original_key", action_id)
-                name_key = f"{item.get('addon_name')}_{item.get('action_name')}"
-                
-                overrides[orig_key] = scut
+                addon_id = str(item.get("addon_id") or "")
+                addon_name = str(item.get("addon_name") or "")
+                action_name = str(item.get("action_name") or "")
+                native_exact = {"anki", "main window", "utilisateur 1 - anki"}
+                native_substring = {
+                    "module complémentaire", "fichier", "file", "outils", "tools",
+                    "affichage", "view", "aide", "help", "édition", "edit", "action sans titre"
+                }
+                if addon_id == "live_qt" and addon_name not in ("Leaderboard",):
+                    continue
+                if (addon_name.lower() in native_exact
+                        or any(f in addon_name.lower() for f in native_substring)
+                        or addon_name.lower().endswith(" - anki")):
+                    continue
+
+                name_key = f"{addon_name}_{action_name}"
+                id_key = f"{addon_id}_{action_name}"
                 overrides[name_key] = scut
+                overrides[id_key] = scut
+
+                edn = item.get("edn_info")
+                if edn and isinstance(edn, dict):
+                    sk = edn.get("shortcut_key")
+                    if sk:
+                        overrides[sk] = scut
 
                 # 1. Mise a jour immediate des objets Qt vivants
                 qact = item.get("qaction")
@@ -970,16 +1010,14 @@ class ShortcutManagerDialog(QDialog):
                 # 2. Mise a jour pour l'ecosysteme EDN
                 edn = item.get("edn_info")
                 if edn and isinstance(edn, dict):
-                    try:
-                        from Anki_EDN_Lier_les_cartes.edn_menu import shared_menu
-                        sk = edn.get("shortcut_key")
-                        if sk:
-                            shared_menu.set_shortcut(sk, scut)
-                    except Exception:
-                        pass
+                    sk = edn.get("shortcut_key")
+                    if sk:
+                        try:
+                            self.addon_scanner.save_edn_shortcut(sk, scut)
+                        except Exception:
+                            pass
 
                 # 3. Mise a jour de la configuration de l'addon tiers
-                addon_id = item.get("addon_id")
                 cfg_key = item.get("config_key")
                 if addon_id and cfg_key and mw and hasattr(mw, "addonManager") and mw.addonManager:
                     try:
@@ -990,7 +1028,16 @@ class ShortcutManagerDialog(QDialog):
                     except Exception:
                         pass
 
-        self.config["addon_shortcuts_overrides"] = overrides
+        # Nettoyage rigoureux des overrides pour eliminer toute scorie
+        clean_overrides = {}
+        for ok, ov in overrides.items():
+            if ok.startswith("addon_live_qt_") or ok.startswith("addon_"):
+                continue
+            if any(f in ok.lower() for f in ("module complémentaire", "utilisateur 1 - anki", "action sans titre")):
+                continue
+            clean_overrides[ok] = ov
+
+        self.config["addon_shortcuts_overrides"] = clean_overrides
         # La langue est lue depuis config.json (interface_language), pas modifiee ici
 
         # Ecriture de la configuration du customizer

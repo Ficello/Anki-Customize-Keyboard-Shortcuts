@@ -61,6 +61,18 @@ if not config:
             config = json.load(_f)
     except Exception:
         config = {}
+
+try:
+    import os, json
+    _def_path = os.path.join(os.path.dirname(__file__), "default_config.json")
+    if os.path.isfile(_def_path):
+        with open(_def_path, "r", encoding="utf-8") as _df:
+            _def_cfg = json.load(_df)
+        for _k, _v in _def_cfg.items():
+            if _k not in config:
+                config[_k] = _v
+except Exception:
+    pass
 CS_CONFLICTSTR = "Custom Shortcut Conflicts: \n\n"
 # config_scuts initialized after cs_traverseKeys
 Qt_functions = {"Qt.Key_Enter":Qt.Key.Key_Enter,
@@ -110,32 +122,46 @@ def update_shortcut_manager_menu_text(new_lang):
 addHook("profileLoaded", add_shortcut_manager_menu)
 
 def apply_addon_shortcuts_overrides():
-    """Reapplique les raccourcis personnalises des addons tiers au demarrage."""
+    """Reapplique les raccourcis personnalises des addons tiers au demarrage (identifiants semantiques uniquement)."""
     try:
         cfg = mw.addonManager.getConfig(__name__) if (mw and hasattr(mw, "addonManager") and mw.addonManager) else {}
         overrides = cfg.get("addon_shortcuts_overrides", {})
-        if not overrides:
+        if not overrides or not isinstance(overrides, dict):
             return
         from .addon_scanner import AddonScanner
         scanner = AddonScanner(current_addon_id="1762336370")
         items = scanner.get_all_addon_shortcuts()
-        for idx, item in enumerate(items):
-            k = f"addon_{item.addon_id}_{idx}"
-            name_key = f"{item.addon_name}_{item.action_name}"
-            new_scut = overrides.get(k) or overrides.get(name_key)
+
+        native_exact = {"anki", "main window", "utilisateur 1 - anki"}
+        native_substring = {
+            "module complémentaire", "fichier", "file", "outils", "tools",
+            "affichage", "view", "aide", "help", "édition", "edit", "action sans titre"
+        }
+
+        for item in items:
+            addon_id = str(item.addon_id or "")
+            addon_name = str(item.addon_name or "")
+            action_name = str(item.action_name or "")
+
+            # Protection absolue : ne jamais appliquer d'overrides a des items live_qt non verifies
+            if addon_id == "live_qt" and addon_name not in ("Leaderboard",):
+                continue
+            if (addon_name.lower() in native_exact
+                    or any(f in addon_name.lower() for f in native_substring)
+                    or addon_name.lower().endswith(" - anki")):
+                continue
+
+            name_key = f"{addon_name}_{action_name}"
+            sk = item.edn_info.get("shortcut_key") if item.edn_info else None
+            id_key = f"{addon_id}_{action_name}"
+
+            # Recherche STRICTEMENT par cle semantique stable (JAMAIS par index positionnel numerique)
+            new_scut = (overrides.get(sk) if sk else None) or overrides.get(name_key) or overrides.get(id_key)
             if new_scut:
                 if item.qaction and hasattr(item.qaction, "setShortcut"):
                     item.qaction.setShortcut(QKeySequence(new_scut if new_scut != "<nop>" else ""))
                 if item.qshortcut and hasattr(item.qshortcut, "setKey"):
                     item.qshortcut.setKey(QKeySequence(new_scut if new_scut != "<nop>" else ""))
-                if item.edn_info and isinstance(item.edn_info, dict):
-                    try:
-                        from Anki_EDN_Lier_les_cartes.edn_menu import shared_menu
-                        sk = item.edn_info.get("shortcut_key")
-                        if sk:
-                            shared_menu.set_shortcut(sk, new_scut)
-                    except Exception:
-                        pass
     except Exception as e:
         print(f"[custom_shortcuts] Error applying addon shortcut overrides: {e}")
 
@@ -615,7 +641,7 @@ def cs_getAllScuts(obj, strCont):
                 res[text_scut] = [key + " in " + strCont]
     return res
 
-# Ignores the Add-on (Ω) options
+# Ignores the Add-on (Ω) options and addon_shortcuts_overrides
 def cs_conflictDetect():
     if config["Ω enable conflict warning"].upper() != "Y":
         return
@@ -624,6 +650,10 @@ def cs_conflictDetect():
         sub = e[0:(e.find(" "))]
         val = config[e]
         if sub == "Ω":
+            continue
+        # Exclure la section des overrides d'addons tiers : ces raccourcis sont
+        # gérés séparément et peuvent légitimement partager des touches.
+        if e == "addon_shortcuts_overrides":
             continue
         if sub not in ext_list:
             ext_list[sub] = {}

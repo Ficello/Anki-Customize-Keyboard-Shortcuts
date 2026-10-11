@@ -97,7 +97,7 @@
 	"window_browser preview": "Ctrl+Shift+P",
 	"window_browser reschedule":"Ctrl+Shift+D",
 	"window_browser select all":"Ctrl+Alt+A",
-	"window_browser undo":"Ctrl+Alt+Z",
+	"window_browser undo":"Ctrl+Z",
 	"window_browser invert selection":"Ctrl+Alt+S",
 	"window_browser find":"Ctrl+F",
 	"window_browser goto note":"Ctrl+Shift+N",
