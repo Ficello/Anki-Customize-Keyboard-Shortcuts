@@ -205,6 +205,7 @@ class ShortcutManagerDialog(QDialog):
         
         self.selected_key_id = None
         self.selected_key_label = ""
+        self.selected_action_id = None
         self.show_anki = True
         self.show_addons = True
         
@@ -515,6 +516,7 @@ class ShortcutManagerDialog(QDialog):
         """Désélectionne la touche courante."""
         self.selected_key_id = None
         self.selected_key_label = ""
+        self.selected_action_id = None
         self.virtual_keyboard.deselect_key()
         self.inspector_header.setText(self.i18n.t("no_key_selected"))
         self.btn_clear_key.setEnabled(False)
@@ -718,6 +720,12 @@ class ShortcutManagerDialog(QDialog):
 
             row_idx += 1
 
+    def _get_scope_name(self, item):
+        scope_trans = self.i18n.t(f"scope_{item['scope']}", item['scope'])
+        if item.get("source") == "addon":
+            return f"{item.get('addon_name', '')} ({scope_trans})"
+        return scope_trans
+
     def filter_commands_table(self):
         self.populate_commands_table()
 
@@ -725,9 +733,11 @@ class ShortcutManagerDialog(QDialog):
         """Lorsqu'une ligne est selectionnee dans le tableau, synchroniser le clavier virtuel."""
         selected_items = self.commands_table.selectedItems()
         if not selected_items:
+            self.selected_action_id = None
             return
         row = selected_items[0].row()
         action_id = self.commands_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        self.selected_action_id = action_id
         item = self.shortcuts_data.get(action_id)
         if not item:
             return
@@ -784,12 +794,17 @@ class ShortcutManagerDialog(QDialog):
         show_anki = self.chk_filter_anki.isChecked()
         show_addons = self.chk_filter_addons.isChecked()
 
+        selected_action_id = getattr(self, "selected_action_id", None)
+        selected_item = self.shortcuts_data.get(selected_action_id) if selected_action_id else None
+        selected_scope = selected_item.get("scope") if selected_item else None
+
         for row_idx, (trans_key, mod_prefix) in enumerate(MODIFIER_COMBINATIONS):
             mod_label = self.i18n.t(trans_key)
             self.inspector_table.setItem(row_idx, 0, QTableWidgetItem(mod_label))
 
-            matched_action = None
-            matched_action_id = None
+            test_full = "+".join(sorted(mod_prefix.split("+") if mod_prefix else []) + [eff_id])
+
+            matching_actions = []
             for action_id, item in self.shortcuts_data.items():
                 if item["source"] == "anki" and not show_anki:
                     continue
@@ -800,21 +815,69 @@ class ShortcutManagerDialog(QDialog):
                         continue
                 elif current_scope != "all" and item["scope"] != current_scope:
                     continue
-                
-                _, item_base = self.virtual_keyboard._parse_shortcut_string(item["shortcut"])
-                item_mods, _ = self.virtual_keyboard._parse_shortcut_string(item["shortcut"])
+
+                scut = item.get("shortcut", "")
+                if not scut or scut == "<nop>":
+                    continue
+
+                item_mods, item_base = self.virtual_keyboard._parse_shortcut_string(scut)
                 item_full = "+".join(sorted(item_mods) + [item_base.upper()])
-                test_full = "+".join(sorted(mod_prefix.split("+") if mod_prefix else []) + [eff_id])
 
                 if item_full == test_full:
-                    matched_action = item
-                    matched_action_id = action_id
-                    break
+                    matching_actions.append((action_id, item))
 
-            if matched_action:
-                act_text = f"{matched_action['label']} ({matched_action['shortcut']})"
+            if matching_actions:
+                def sort_key(entry):
+                    act_id, it = entry
+                    is_selected = (act_id == selected_action_id)
+                    matches_sel_scope = (selected_scope is not None and it.get("scope") == selected_scope)
+                    scope_order = {"main": 0, "editor": 1, "browser": 2, "reviewer": 3}.get(it.get("scope"), 4)
+                    return (not is_selected, not matches_sel_scope, scope_order)
+
+                matching_actions.sort(key=sort_key)
+
+                scope_counts = {}
+                for _, it in matching_actions:
+                    sc = it.get("scope", "main")
+                    scope_counts[sc] = scope_counts.get(sc, 0) + 1
+                conflicting_scopes = [sc for sc, count in scope_counts.items() if count > 1]
+                has_conflict = len(conflicting_scopes) > 0
+
+                primary_id, primary_item = matching_actions[0]
+                primary_scope_name = self._get_scope_name(primary_item)
+
+                if has_conflict:
+                    act_text = f"[Conflit] {primary_item['label']}"
+                    if len(matching_actions) > 1:
+                        other_names = [it['label'] for aid, it in matching_actions[1:] if it.get("scope") in conflicting_scopes]
+                        if other_names:
+                            act_text += f" / {', '.join(other_names)}"
+                elif len(matching_actions) == 1:
+                    act_text = f"{primary_item['label']} ({primary_item['shortcut']})"
+                else:
+                    if current_scope == "all":
+                        act_text = f"{primary_item['label']} [{primary_scope_name}] (+{len(matching_actions)-1} autre(s) contexte(s))"
+                    else:
+                        act_text = f"{primary_item['label']} ({primary_item['shortcut']})"
+
                 item_widget = QTableWidgetItem(act_text)
-                item_widget.setData(Qt.ItemDataRole.UserRole, matched_action_id)
+                item_widget.setData(Qt.ItemDataRole.UserRole, primary_id)
+
+                tooltip_lines = [self.i18n.t("shortcuts_for_combination", "Actions associees :")]
+                for aid, it in matching_actions:
+                    sc_name = self._get_scope_name(it)
+                    is_current = " [selection]" if aid == selected_action_id else ""
+                    tooltip_lines.append(f"- {it['label']} : {sc_name} ({it['shortcut']}){is_current}")
+                if has_conflict:
+                    conf_names = [self.i18n.t(f"scope_{s}", s) for s in conflicting_scopes]
+                    tooltip_lines.append("")
+                    tooltip_lines.append(f"Attention : Conflit de raccourci dans le meme contexte ({', '.join(conf_names)})")
+
+                item_widget.setToolTip("\n".join(tooltip_lines))
+
+                if has_conflict:
+                    item_widget.setForeground(QColor("#c53030"))
+
                 self.inspector_table.setItem(row_idx, 1, item_widget)
             else:
                 empty_item = QTableWidgetItem("-")

@@ -165,7 +165,18 @@ def apply_addon_shortcuts_overrides():
     except Exception as e:
         print(f"[custom_shortcuts] Error applying addon shortcut overrides: {e}")
 
-addHook("profileLoaded", apply_addon_shortcuts_overrides)
+def _schedule_addon_shortcuts_overrides():
+    apply_addon_shortcuts_overrides()
+    try:
+        QTimer.singleShot(0, apply_addon_shortcuts_overrides)
+        QTimer.singleShot(250, apply_addon_shortcuts_overrides)
+    except Exception:
+        pass
+
+if new_hooks:
+    gui_hooks.profile_did_open.append(_schedule_addon_shortcuts_overrides)
+else:
+    addHook("profileLoaded", _schedule_addon_shortcuts_overrides)
 
 # There is a weird interaction with QShortcuts wherein if there are 2 (or more)
 # QShortcuts mapped to the same key and function and both are enabled,
@@ -520,7 +531,7 @@ def cs_captureBridgeToggleSticky(self, cmd, _old):
     # If we intercept a "toggle sticky all" command, then
     if cmd.startswith("toggleStickyAll") and config_scuts["editor toggle sticky all"] != "Shift+F9":
         model = self.note.note_type()
-        return model["flds"]["sticky"]
+        return [fld.get("sticky", False) for fld in model.get("flds", [])]
     elif cmd.startswith("toggleSticky") and config_scuts["editor toggle sticky current"] != "F9":
         model = self.note.note_type()
         (_, num) = cmd.split(":",1)

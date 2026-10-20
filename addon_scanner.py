@@ -175,6 +175,16 @@ class AddonScanner:
                     pass
 
             if name == entry:
+                manifest_path = os.path.join(addon_path, "manifest.json")
+                if os.path.isfile(manifest_path):
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            manifest = json.load(f)
+                            name = manifest.get("name") or entry
+                    except Exception:
+                        pass
+
+            if name == entry:
                 clean_name = entry.replace("_", " ").replace("-", " ")
                 if "edn" in clean_name.lower():
                     clean_name = clean_name.replace("Anki EDN", "Anki EDN").replace("edn", "EDN")
@@ -261,9 +271,12 @@ class AddonScanner:
                         pass
 
         handled_keys = set()
+        handled_modules = set()
+        handled_signatures = set()
 
         if isinstance(edn_reg, dict):
             for module_id, mod_info in edn_reg.items():
+                handled_modules.add(module_id)
                 mod_name = mod_info.get("name", module_id.replace("_", " ").title())
                 friendly_addon = f"Anki EDN ({mod_name})" if "edn" not in mod_name.lower() else f"Anki {mod_name}"
 
@@ -271,6 +284,10 @@ class AddonScanner:
                     label = act_data.get("label", "Action EDN")
                     shortcut_key = act_data.get("shortcut_key") or f"{module_id}_{label}"
                     handled_keys.add(shortcut_key)
+                    handled_signatures.add((module_id, label.strip().lower()))
+                    if module_id == "edn_progress":
+                        handled_keys.add("edn_progress_stat")
+                        handled_keys.add("edn_progress_EDN Stat")
 
                     scut = edn_saved_scuts.get(shortcut_key, act_data.get("shortcut"))
                     qact = act_data.get("action")
@@ -329,9 +346,9 @@ class AddonScanner:
             {
                 "folder": "Anki_EDN_Stats",
                 "module_id": "edn_progress",
-                "addon_name": "Anki EDN (Stats)",
+                "addon_name": "Anki EDN Stat",
                 "actions": [
-                    {"label": "Statistiques EDN", "shortcut_key": "edn_progress_stat", "default": "Ctrl+U", "scope": "main"}
+                    {"label": "EDN Stat", "shortcut_key": "edn_progress_EDN Stat", "default": "Ctrl+U", "scope": "main"}
                 ]
             },
             {
@@ -345,6 +362,8 @@ class AddonScanner:
         ]
 
         for mod_def in known_edn:
+            if mod_def["module_id"] in handled_modules:
+                continue
             folder_path = os.path.join(addons_dir, mod_def["folder"])
             if not os.path.isdir(folder_path):
                 continue
@@ -354,9 +373,11 @@ class AddonScanner:
 
             for act in mod_def["actions"]:
                 sk = act["shortcut_key"]
-                if sk in handled_keys:
+                sig = (mod_def["module_id"], act["label"].strip().lower())
+                if sk in handled_keys or sig in handled_signatures:
                     continue
                 handled_keys.add(sk)
+                handled_signatures.add(sig)
 
                 current_scut = edn_saved_scuts.get(sk, act["default"])
                 norm = self.normalize_shortcut(current_scut)
@@ -404,6 +425,38 @@ class AddonScanner:
                 ))
         return results
 
+    def _find_live_qaction(self, action_label, menu_title=None):
+        """Recherche une QAction vivante dans la barre de menu d'Anki par son intitule."""
+        try:
+            menu_bar = None
+            if mw and hasattr(mw, "form") and hasattr(mw.form, "menubar") and mw.form.menubar:
+                menu_bar = mw.form.menubar
+            elif mw and hasattr(mw, "menuBar") and mw.menuBar():
+                menu_bar = mw.menuBar()
+            if not menu_bar:
+                return None
+
+            target_label = action_label.replace("&", "").strip().lower()
+            target_menu = menu_title.replace("&", "").strip().lower() if menu_title else None
+
+            for top_act in menu_bar.actions():
+                menu = top_act.menu()
+                if not menu:
+                    continue
+                if target_menu:
+                    m_title = menu.title().replace("&", "").strip().lower()
+                    if m_title != target_menu:
+                        continue
+                for act in menu.actions():
+                    if act.isSeparator():
+                        continue
+                    act_text = act.text().replace("&", "").strip().lower()
+                    if act_text == target_label:
+                        return act
+        except Exception:
+            pass
+        return None
+
     def scan_code_shortcuts(self):
         """Scanne les raccourcis definis directement dans le code Python d'addons sans config.json."""
         results = []
@@ -436,6 +489,29 @@ class AddonScanner:
                     source="code",
                     scope="browser"
                 ))
+
+        # Arrière-plan HD Spotlight (Anki_EDN_Spotlight_Background)
+        spotlight_dir = os.path.join(addons_dir, "Anki_EDN_Spotlight_Background")
+        if os.path.isdir(spotlight_dir):
+            meta = self._addon_meta.get("Anki_EDN_Spotlight_Background")
+            if not meta or not meta.get("disabled"):
+                spotlight_name = self.get_friendly_addon_name("Anki_EDN_Spotlight_Background")
+                spotlight_actions = [
+                    ("J'aime cette photo (Garder en favori)", "Ctrl+J", "main"),
+                    ("Je n'aime pas (Ne plus afficher)", "Ctrl+K", "main"),
+                    ("Photo suivante", "Ctrl+;", "main"),
+                ]
+                for act_label, default_scut, scope in spotlight_actions:
+                    live_qact = self._find_live_qaction(act_label, menu_title="Arrière-plan")
+                    results.append(AddonShortcutItem(
+                        addon_id="Anki_EDN_Spotlight_Background",
+                        addon_name=spotlight_name,
+                        action_name=act_label,
+                        shortcut=default_scut,
+                        source="code",
+                        scope=scope,
+                        qaction=live_qact
+                    ))
 
         return results
 
@@ -615,7 +691,7 @@ class AddonScanner:
 
         return "Module complémentaire"
 
-    def _collect_actions_from_widget(self, widget, scope, seen_pairs, results):
+    def _collect_actions_from_widget(self, widget, scope, seen_pairs, results, seen_qactions=None, seen_action_names=None):
         """Scan securise des QAction instanciees appartenant a un addon tiers identifie."""
         try:
             actions = widget.findChildren(QAction)
@@ -630,6 +706,8 @@ class AddonScanner:
 
         for action in actions:
             try:
+                if seen_qactions and action in seen_qactions:
+                    continue
                 scut = action.shortcut().toString()
                 norm = self.normalize_shortcut(scut)
                 if not norm:
@@ -638,6 +716,8 @@ class AddonScanner:
                 if not text:
                     text = action.objectName() or ""
                 if not text:
+                    continue
+                if seen_action_names and text.lower() in seen_action_names:
                     continue
 
                 addon_name = self._resolve_addon_name_for_action(action)
@@ -670,6 +750,8 @@ class AddonScanner:
                 return results
 
             seen_pairs = set((item.shortcut.lower(), item.action_name.lower()) for item in known_shortcuts)
+            seen_qactions = set(item.qaction for item in known_shortcuts if getattr(item, "qaction", None) is not None)
+            seen_action_names = set(item.action_name.strip().lower() for item in known_shortcuts if getattr(item, "action_name", None))
 
             top_widgets = app.topLevelWidgets()
             for widget in top_widgets:
@@ -683,7 +765,7 @@ class AddonScanner:
                     elif "reviewer" in w_cls:
                         scope = "reviewer"
 
-                    self._collect_actions_from_widget(widget, scope, seen_pairs, results)
+                    self._collect_actions_from_widget(widget, scope, seen_pairs, results, seen_qactions, seen_action_names)
                 except Exception:
                     continue
 
@@ -694,7 +776,7 @@ class AddonScanner:
                     for action in menu_bar.actions():
                         menu = action.menu()
                         if menu:
-                            self._scan_menu_recursively(menu, seen_pairs, results)
+                            self._scan_menu_recursively(menu, seen_pairs, results, seen_qactions, seen_action_names)
             except Exception:
                 pass
         except Exception:
@@ -702,7 +784,7 @@ class AddonScanner:
 
         return results
 
-    def _scan_menu_recursively(self, menu, seen_pairs, results):
+    def _scan_menu_recursively(self, menu, seen_pairs, results, seen_qactions=None, seen_action_names=None):
         """Scanne recursivement un QMenu et ses sous-menus pour extraire les raccourcis d'addons."""
         try:
             parent_title = menu.title().replace("&", "").strip()
@@ -721,10 +803,12 @@ class AddonScanner:
             try:
                 if action.isSeparator():
                     continue
+                if seen_qactions and action in seen_qactions:
+                    continue
 
                 sub_menu = action.menu()
                 if sub_menu:
-                    self._scan_menu_recursively(sub_menu, seen_pairs, results)
+                    self._scan_menu_recursively(sub_menu, seen_pairs, results, seen_qactions, seen_action_names)
                     continue
 
                 scut = action.shortcut().toString()
@@ -734,6 +818,8 @@ class AddonScanner:
 
                 text = action.text().replace("&", "").strip()
                 if not text:
+                    continue
+                if seen_action_names and text.lower() in seen_action_names:
                     continue
 
                 addon_name = self._resolve_addon_name_for_action(action)
@@ -800,7 +886,19 @@ class AddonScanner:
 
         unique = []
         seen = set()
+        seen_edn = set()
         for item in all_items:
+            edn = getattr(item, "edn_info", None)
+            if edn and isinstance(edn, dict):
+                m_id = edn.get("module_id")
+                lbl = str(edn.get("label", "")).lower().replace("statistiques", "").replace("stat", "").strip()
+                edn_sig = (m_id, lbl, item.scope)
+                if m_id == "edn_progress":
+                    edn_sig = ("edn_progress", item.scope)
+                if edn_sig in seen_edn:
+                    continue
+                seen_edn.add(edn_sig)
+
             key = (item.addon_name.lower(), item.action_name.lower(), item.shortcut.lower(), item.scope)
             if key not in seen:
                 seen.add(key)
