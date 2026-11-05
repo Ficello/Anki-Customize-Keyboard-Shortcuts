@@ -691,8 +691,29 @@ class AddonScanner:
 
         return "Module complémentaire"
 
+    def _resolve_addon_name_from_object(self, obj) -> str:
+        """Détermine le nom et le dossier de l'addon via introspection Python (__module__)."""
+        if not obj:
+            return ""
+        # 1. Tester les callbacks connectés ou attributs
+        for attr in ("_callback", "callback", "func", "trigger_func"):
+            fn = getattr(obj, attr, None)
+            if fn and hasattr(fn, "__module__"):
+                mod = fn.__module__
+                parts = mod.split(".")
+                if parts and parts[0] in self._addon_meta:
+                    return self._addon_meta[parts[0]].get("name", parts[0])
+
+        # 2. Remonter la classe de l'objet
+        cls_mod = getattr(obj.__class__, "__module__", "")
+        parts = cls_mod.split(".")
+        if parts and parts[0] in self._addon_meta:
+            return self._addon_meta[parts[0]].get("name", parts[0])
+
+        return ""
+
     def _collect_actions_from_widget(self, widget, scope, seen_pairs, results, seen_qactions=None, seen_action_names=None):
-        """Scan securise des QAction instanciees appartenant a un addon tiers identifie."""
+        """Scan securise des QAction et QShortcut instancies appartenant a un addon tiers identifie."""
         try:
             actions = widget.findChildren(QAction)
         except Exception:
@@ -720,7 +741,7 @@ class AddonScanner:
                 if seen_action_names and text.lower() in seen_action_names:
                     continue
 
-                addon_name = self._resolve_addon_name_for_action(action)
+                addon_name = self._resolve_addon_name_from_object(action) or self._resolve_addon_name_for_action(action)
                 if not addon_name or addon_name.lower() in _forbidden_names or addon_name.lower().endswith(" - anki"):
                     continue
 
@@ -737,6 +758,40 @@ class AddonScanner:
                     source="live",
                     scope=scope,
                     qaction=action
+                ))
+            except Exception:
+                continue
+
+        # Scan des QShortcut instanciés sur ce widget
+        try:
+            shortcuts = widget.findChildren(QShortcut)
+        except Exception:
+            shortcuts = []
+
+        for qs in shortcuts:
+            try:
+                scut = qs.key().toString()
+                norm = self.normalize_shortcut(scut)
+                if not norm:
+                    continue
+                obj_name = qs.objectName() or "Raccourci"
+                addon_name = self._resolve_addon_name_from_object(qs) or self._resolve_addon_name_for_qshortcut(qs, obj_name)
+                if not addon_name or addon_name.lower() in _forbidden_names or addon_name.lower().endswith(" - anki"):
+                    continue
+
+                pair = (norm.lower(), f"{addon_name}_{obj_name}".lower())
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+
+                results.append(AddonShortcutItem(
+                    addon_id="live_qt",
+                    addon_name=addon_name,
+                    action_name=obj_name,
+                    shortcut=norm,
+                    source="live",
+                    scope=scope,
+                    qshortcut=qs
                 ))
             except Exception:
                 continue
@@ -848,8 +903,34 @@ class AddonScanner:
             except Exception:
                 continue
 
+    def scan_broker_claims(self):
+        """Scanne les raccourcis enregistrés auprès du ShortcutBroker (via shortcuts.json ou claim dynamique)."""
+        results = []
+        try:
+            broker = getattr(mw, "shortcut_broker", None)
+            if broker and hasattr(broker, "claims"):
+                for act_id, claim in broker.claims.items():
+                    if claim.current_key:
+                        results.append(AddonShortcutItem(
+                            addon_id=claim.addon_id or "broker",
+                            addon_name=claim.addon_name,
+                            action_name=claim.label,
+                            shortcut=claim.current_key,
+                            source="broker",
+                            scope=claim.scope,
+                            config_key=claim.config_key
+                        ))
+        except Exception as e:
+            print(f"[AddonScanner] Erreur scan_broker_claims: {e}")
+        return results
+
     def get_all_addon_shortcuts(self):
         """Point d'entree unifie : extrait, harmonise et fusionne tous les raccourcis d'extensions."""
+        try:
+            broker_items = self.scan_broker_claims()
+        except Exception:
+            broker_items = []
+
         try:
             edn_items = self.scan_edn_shortcuts()
         except Exception as e:
@@ -874,7 +955,7 @@ class AddonScanner:
             print(f"[AddonScanner] Erreur scan_addon_configs: {e}")
             config_items = []
 
-        all_so_far = edn_items + diff_items + code_items + config_items
+        all_so_far = broker_items + edn_items + diff_items + code_items + config_items
 
         try:
             live_items = self.scan_live_actions(all_so_far)

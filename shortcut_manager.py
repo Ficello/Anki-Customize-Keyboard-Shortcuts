@@ -50,18 +50,20 @@ MODIFIER_COMBINATIONS = [
 ]
 
 class KeySequenceCaptureDialog(QDialog):
-    """Dialogue modal de capture de raccourci clavier au vol."""
-    def __init__(self, parent, action_label, current_scut, i18n):
+    """Dialogue modal de capture de raccourci clavier au vol avec validation en direct des collisions."""
+    def __init__(self, parent, action_label, current_scut, i18n, scope="all", action_id=None):
         super().__init__(parent)
         self.i18n = i18n
+        self.scope = scope
+        self.action_id = action_id
         self.captured_shortcut = current_scut or ""
         self.setWindowTitle(self.i18n.t("dialog_edit_title", "Modifier le raccourci"))
-        self.setFixedSize(450, 220)
+        self.setFixedSize(480, 260)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         title_lbl = QLabel(f"<b>{action_label}</b>")
         title_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -78,7 +80,7 @@ class KeySequenceCaptureDialog(QDialog):
             QLabel {
                 font-size: 16px;
                 font-weight: bold;
-                padding: 12px;
+                padding: 10px;
                 border: 2px dashed #3182ce;
                 border-radius: 6px;
                 background-color: rgba(49, 130, 206, 0.08);
@@ -86,6 +88,12 @@ class KeySequenceCaptureDialog(QDialog):
         """)
         self.display_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.display_lbl)
+
+        # Statut de disponibilité en temps réel
+        self.conflict_status_lbl = QLabel("")
+        self.conflict_status_lbl.setStyleSheet("font-size: 11px;")
+        self.conflict_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.conflict_status_lbl)
 
         btn_box = QHBoxLayout()
         self.btn_clear = QPushButton(self.i18n.t("dialog_edit_clear", "Effacer (Désactiver)"))
@@ -101,6 +109,30 @@ class KeySequenceCaptureDialog(QDialog):
         btn_box.addWidget(self.btn_cancel)
         btn_box.addWidget(self.btn_ok)
         layout.addLayout(btn_box)
+
+        self._check_availability(self.captured_shortcut)
+
+    def _check_availability(self, scut):
+        if not scut or scut == "<nop>":
+            self.conflict_status_lbl.setText("Raccourci désactivé")
+            self.conflict_status_lbl.setStyleSheet("color: #718096; font-size: 11px;")
+            return
+
+        broker = getattr(mw, "shortcut_broker", None)
+        if broker:
+            occupied = broker.get_occupied(scope=self.scope, include_global=True)
+            norm = scut.upper()
+            owners = occupied.get(norm, [])
+            other_owners = [o for o in owners if o.get("action") != self.action_id]
+            if other_owners:
+                first = other_owners[0]
+                self.conflict_status_lbl.setText(f"Attention : déjà utilisé par [{first.get('owner')}] {first.get('action')}")
+                self.conflict_status_lbl.setStyleSheet("color: #e53e3e; font-weight: bold; font-size: 11px;")
+            else:
+                self.conflict_status_lbl.setText("Combinaison disponible dans ce contexte")
+                self.conflict_status_lbl.setStyleSheet("color: #2b6cb0; font-weight: bold; font-size: 11px;")
+        else:
+            self.conflict_status_lbl.setText("")
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -165,10 +197,12 @@ class KeySequenceCaptureDialog(QDialog):
             full_seq = "+".join(parts + [key_name])
             self.captured_shortcut = full_seq
             self.display_lbl.setText(full_seq)
+            self._check_availability(full_seq)
 
     def on_clear(self):
         self.captured_shortcut = "<nop>"
         self.display_lbl.setText("<nop>")
+        self._check_availability("<nop>")
 
 
 class ShortcutManagerDialog(QDialog):
@@ -897,7 +931,9 @@ class ShortcutManagerDialog(QDialog):
         if not item or item.get("is_disabled"):
             return
 
-        dlg = KeySequenceCaptureDialog(self, item["label"], item["shortcut"], self.i18n)
+        scope = item.get("scope", "all")
+        orig_key = item.get("original_key", action_id)
+        dlg = KeySequenceCaptureDialog(self, item["label"], item["shortcut"], self.i18n, scope=scope, action_id=orig_key)
         if dlg.exec():
             new_scut = dlg.captured_shortcut
             item["shortcut"] = new_scut
@@ -1091,6 +1127,11 @@ class ShortcutManagerDialog(QDialog):
                     except Exception:
                         pass
 
+                # 4. Notification du broker pour le Hot-Reload des add-ons connectés
+                broker = getattr(mw, "shortcut_broker", None)
+                if broker:
+                    broker.notify_shortcut_changed(action_id, scut)
+
         # Nettoyage rigoureux des overrides pour eliminer toute scorie
         clean_overrides = {}
         for ok, ov in overrides.items():
@@ -1120,6 +1161,19 @@ class ShortcutManagerDialog(QDialog):
                     json.dump(self.config, f, ensure_ascii=False, indent=4)
             except Exception:
                 pass
+
+        # 5. Hot-Reload des raccourcis natifs Anki immédiat sans redémarrage
+        try:
+            from . import custom_shortcuts
+            custom_shortcuts.config = dict(self.config)
+            custom_shortcuts.config_scuts = custom_shortcuts.cs_traverseKeys(custom_shortcuts.Qt_functions, self.config)
+            if mw and hasattr(mw, "form"):
+                custom_shortcuts.cs_mt_setupShortcuts()
+                custom_shortcuts.cs_main_setupShortcuts()
+                if hasattr(mw, "toolbar") and mw.toolbar:
+                    mw.toolbar.draw()
+        except Exception as e:
+            print(f"[shortcut_manager] Erreur lors du rechargement à chaud Anki natif : {e}")
 
         showInfo(self.i18n.t("changes_saved"))
 

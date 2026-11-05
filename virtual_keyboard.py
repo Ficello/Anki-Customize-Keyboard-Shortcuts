@@ -227,13 +227,15 @@ class VirtualKeyboardWidget(QWidget):
             if base_key:
                 mod_key = "+".join(sorted(mods))
                 dict_key = (mod_key, base_key.upper())
-                self.shortcut_map[dict_key] = {
+                if dict_key not in self.shortcut_map:
+                    self.shortcut_map[dict_key] = []
+                self.shortcut_map[dict_key].append({
                     "action_id": action_id,
                     "label": info.get("label", action_id),
                     "source": info.get("source", "anki"),
                     "scope": info.get("scope", "main"),
                     "full_shortcut": scut
-                }
+                })
                 self.all_keys_with_actions.add(base_key.upper())
 
         self.update()
@@ -573,23 +575,39 @@ class VirtualKeyboardWidget(QWidget):
 
     def _get_action_for_key(self, key_id):
         """Recherche l'action associee a la touche pour l'etat actuel des modificateurs."""
-        eff_id = key_id.upper()
-        mod_key = "+".join(sorted(self.active_modifiers))
-        info = self.shortcut_map.get((mod_key, eff_id))
-        if info:
-            return info.get("label", "")
-        return ""
+        infos = self._get_action_infos(key_id)
+        if not infos:
+            return ""
+        if len(infos) > 1:
+            return f"[Conflit ({len(infos)})] " + " / ".join(i.get("label", "") for i in infos)
+        return infos[0].get("label", "")
 
     def _has_any_action(self, key_id):
         """Indique si la touche possede une action (sous n'importe quel modificateur)."""
         eff_id = key_id.upper()
         return eff_id in self.all_keys_with_actions
 
-    def _get_action_info(self, key_id):
-        """Retourne les details de l'action sous les modificateurs courants."""
+    def _get_action_infos(self, key_id):
+        """Retourne la liste des actions sous les modificateurs courants."""
         eff_id = key_id.upper()
         mod_key = "+".join(sorted(self.active_modifiers))
-        return self.shortcut_map.get((mod_key, eff_id))
+        raw_list = self.shortcut_map.get((mod_key, eff_id), [])
+        filtered = []
+        for info in raw_list:
+            src = info.get("source", "anki")
+            if (src == "anki" and not self.show_anki) or (src == "addon" and not self.show_addons):
+                continue
+            filtered.append(info)
+        return filtered
+
+    def _has_conflict(self, key_id):
+        """Vérifie si la touche a un conflit direct dans le même scope sous les modificateurs actifs."""
+        infos = self._get_action_infos(key_id)
+        if len(infos) <= 1:
+            return False
+        # Conflit si 2 actions partagent le même scope (ou un scope global)
+        scopes = [i.get("scope", "main") for i in infos]
+        return len(scopes) != len(set(scopes)) or "main" in scopes or "toolbar" in scopes
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -641,11 +659,9 @@ class VirtualKeyboardWidget(QWidget):
             is_mod_active = (key_def.mod_type in self.active_modifiers)
 
         # Action associee
-        action_info = self._get_action_info(eff_id)
-        if action_info:
-            src = action_info.get("source", "anki")
-            if (src == "anki" and not self.show_anki) or (src == "addon" and not self.show_addons):
-                action_info = None
+        action_infos = self._get_action_infos(eff_id)
+        has_conflict = self._has_conflict(eff_id)
+        action_info = action_infos[0] if action_infos else None
 
         has_current_action = (action_info is not None)
         has_any_action = self._has_any_action(eff_id)
@@ -655,6 +671,8 @@ class VirtualKeyboardWidget(QWidget):
         # 1. Couleur de fond de base
         if is_mod_active:
             bg_color = theme["modifier_active"]
+        elif has_conflict:
+            bg_color = QColor("#e53e3e") if self._is_dark_mode() else QColor("#fed7d7")
         elif has_current_action:
             src = action_info.get("source", "anki")
             bg_color = theme["addon_tint"] if src == "addon" else theme["anki_tint"]
@@ -686,6 +704,8 @@ class VirtualKeyboardWidget(QWidget):
         # Bordure
         if is_selected:
             pen = QPen(theme["border_selected"], 2.0)
+        elif has_conflict:
+            pen = QPen(QColor("#c53030"), 1.8)
         elif is_hovered:
             pen = QPen(theme["text_key_dim"], 1.2)
         else:

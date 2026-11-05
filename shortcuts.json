@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Ficello/Anki-Customize-Keyboard-Shortcuts/main/schemas/shortcuts-v1.json",
+  "schema_version": 1,
+  "addon_name": "Customize Keyboard Shortcuts Enhanced",
+  "shortcuts": [
+    {
+      "id": "custom_shortcuts.open_manager",
+      "label": "Ouvrir le gestionnaire de raccourcis clavier",
+      "scope": "main",
+      "default": "Ctrl+Alt+S",
+      "fallbacks": ["Ctrl+Shift+S", "F11"]
+    }
+  ]
+}
