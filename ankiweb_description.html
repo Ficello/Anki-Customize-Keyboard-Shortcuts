@@ -26,6 +26,16 @@
 
 <hr>
 
+<h2>For Add-on Developers & Maintainers</h2>
+<p>Ensure zero shortcut conflicts for your users with zero friction:</p>
+<ul>
+  <li><b>Declarative Manifest (0 lines of code)</b>: Place a <code>shortcuts.json</code> at your add-on root to declare actions, scopes, defaults, and fallback combinations. The enhanced manager maps them to the virtual keyboard and prevents overlapping bindings automatically.</li>
+  <li><b>Dynamic Broker (<code>mw.shortcut_broker</code>)</b>: Query currently occupied keys via <code>broker.get_occupied()</code> or register actions dynamically with <code>broker.claim(...)</code>, enabling immediate conflict-free assignment and live hot-reloading without restarting Anki.</li>
+</ul>
+<p>See <code>DEVELOPER_PROTOCOL.md</code> on our GitHub repository for the full JSON schema and ready-to-use Python snippets.</p>
+
+<hr>
+
 <h2>Compatibility</h2>
 <ul>
   <li>Anki 2.1.50+ up to latest Anki 24.x / 25.x+</li>
