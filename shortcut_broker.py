@@ -247,6 +247,12 @@ class ShortcutBroker:
         - Si non, alloue le 1er choix libre ou une alternative automatique sans conflit.
         - Met en cache le claim et attache le callback `on_change` pour le Hot-Reload.
         """
+        existing = self.claims.get(action_id)
+        if existing is not None:
+            if on_change is not None:
+                existing.on_change = on_change
+            return existing.current_key
+
         norm_prefs = [normalize_key_str(p) for p in preferred if normalize_key_str(p)]
         default_choice = norm_prefs[0] if norm_prefs else ""
         fallbacks = norm_prefs[1:] if len(norm_prefs) > 1 else []
