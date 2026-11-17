@@ -307,3 +307,5 @@ e.g. `"Ω custom paste text": "<span style=\"font-size: 20px; color:#3399ff\">�
 "Ω enable main/window_browser/editor/etc.": If set to "n", doesn't enable the corresponding set of shortcuts for the respective functions (useful for addon compatability in a pinch)
 
 "Ω enable conflict warning": If set to "y", shows a warning window whenever two shortcuts of the same type are set to the same key.
+
+"addon_shortcuts_overrides": Dictionary mapping external add-on shortcut identifiers (e.g. from EDN add-ons) to custom key sequences.
